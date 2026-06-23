@@ -17,13 +17,13 @@ void app_main(void)
         }
 
         // 顯示
-        printf("\033[2K\r");  // 清除行並回到行首
+        // printf("\033[2K\r");  // 清除行並回到行首
         for (int i = 0; i < 16; i++) {
             printf("%s ", bars[level[i]]);
         }
         fflush(stdout);
 
-        vTaskDelay(pdMS_TO_TICKS(120));  // 必須要有，避免 watchdog
+        vTaskDelay(pdMS_TO_TICKS(50));  // 必須要有，避免 watchdog
     }
 
     // 進度條範例
