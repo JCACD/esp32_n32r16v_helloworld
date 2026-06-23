@@ -1,53 +1,54 @@
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_random.h"
-#include "driver/uart.h"
+#include "esp_vfs_dev.h" // for esp_vfs_dev_usb_serial_jtag_register
 
-static const char *TAG = "anim";
+static const char *TAG = "usb_anim";
 
 void app_main(void)
 {
     const char *bars[] = {
         "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"
     };
-
     int level[16];
     uint8_t ch;
 
-    // 初始化 UART0（確保有安裝 driver 才能用 uart_read_bytes 非阻塞讀取）
-    uart_config_t uart_config = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_APB
-    };
-    uart_param_config(UART_NUM_0, &uart_config);
-    // 不改變預設 TX/RX 腳位（通常 USB-to-UART 已接好），所以使用 UART_PIN_NO_CHANGE
-    uart_set_pin(UART_NUM_0, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    // 安裝 driver，rx buffer 設為 2048 bytes，tx buffer 設為 0（不需要）
-    const int rx_buffer_size = 2048;
-    uart_driver_install(UART_NUM_0, rx_buffer_size, 0, 0, NULL, 0);
+    // 註冊 USB Serial JTAG 為 VFS 裝置（把 stdin/stdout/stderr 綁到 USB）
+    // 若 menuconfig 已啟用，這個呼叫會把標準 I/O 綁到 USB Serial JTAG
+    esp_vfs_dev_usb_serial_jtag_register();
 
-    // 提示使用者
-    printf("Starting animation... Press [ESC] key to stop.\n");
+    // 取得 stdin 的檔案描述符並設為 non-blocking
+    int fd = fileno(stdin);
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        ESP_LOGW(TAG, "fcntl F_GETFL failed: %s", strerror(errno));
+    } else {
+        if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+            ESP_LOGW(TAG, "fcntl F_SETFL failed: %s", strerror(errno));
+        }
+    }
+
+    printf("Starting animation over USB... Press [ESC] key to stop.\n");
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // 清空 UART 緩衝區，確保不會讀到開機時的殘留雜訊
-    uart_flush(UART_NUM_0);
-
     while (1) {
-        // 非阻塞檢查是否按下 ESC 鍵
-        int len = uart_read_bytes(UART_NUM_0, &ch, 1, 0); // timeout = 0 => non-blocking
-        if (len > 0) {
+        // 非阻塞讀 stdin
+        ssize_t r = read(fd, &ch, 1);
+        if (r > 0) {
             if (ch == 27) { // ESC
                 printf("\n\033[2K\rESC pressed. Animation stopped.\n");
                 break;
             }
+        } else if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            // 真正的錯誤
+            ESP_LOGW(TAG, "read error: %s", strerror(errno));
         }
 
         // 產生隨機高度
@@ -64,9 +65,6 @@ void app_main(void)
 
         vTaskDelay(pdMS_TO_TICKS(120));
     }
-
-    // 卸載 UART driver（可選）
-    uart_driver_delete(UART_NUM_0);
 
     printf("Program finished.\n");
 }
